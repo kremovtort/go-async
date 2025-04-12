@@ -21,16 +21,6 @@
             pkgsite
             just
           ];
-
-          shellHook = ''
-            echo "Go development environment"
-            echo "Available tools:"
-            echo "  - go: Go compiler"
-            echo "  - gopls: Go language server"
-            echo "  - delve: Go debugger"
-            echo "  - golangci-lint: Go linter"
-            echo "  - just: Command runner"
-          '';
         };
       });
 } 
