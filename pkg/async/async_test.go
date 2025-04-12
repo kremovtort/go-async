@@ -464,3 +464,163 @@ func TestAny(t *testing.T) {
 		t.Errorf("Any returned %v, expected %v", result, "fast")
 	}
 }
+
+func TestEither3(t *testing.T) {
+	ctx := context.Background()
+
+	// Test Either3 with three computations
+	result, err := Either3(ctx,
+		func(ctx context.Context) string {
+			time.Sleep(300 * time.Millisecond)
+			return "slow"
+		},
+		func(ctx context.Context) int {
+			time.Sleep(200 * time.Millisecond)
+			return 42
+		},
+		func(ctx context.Context) float64 {
+			time.Sleep(100 * time.Millisecond)
+			return 3.14
+		},
+	)
+
+	if err != nil {
+		t.Errorf("Either3 returned error: %v", err)
+	}
+
+	// The float64 computation should complete first
+	if result != 3.14 {
+		t.Errorf("Either3 returned %v, expected %v", result, 3.14)
+	}
+}
+
+func TestBoth3(t *testing.T) {
+	ctx := context.Background()
+
+	// Test Both3 with three computations
+	str, num, flt, err := Both3(ctx,
+		func(ctx context.Context) string {
+			time.Sleep(100 * time.Millisecond)
+			return "first"
+		},
+		func(ctx context.Context) int {
+			time.Sleep(200 * time.Millisecond)
+			return 42
+		},
+		func(ctx context.Context) float64 {
+			time.Sleep(300 * time.Millisecond)
+			return 3.14
+		},
+	)
+
+	if err != nil {
+		t.Errorf("Both3 returned error: %v", err)
+	}
+
+	if str != "first" {
+		t.Errorf("Both3 returned %v, expected %v", str, "first")
+	}
+
+	if num != 42 {
+		t.Errorf("Both3 returned %v, expected %v", num, 42)
+	}
+
+	if flt != 3.14 {
+		t.Errorf("Both3 returned %v, expected %v", flt, 3.14)
+	}
+}
+
+func TestWaitEither3(t *testing.T) {
+	ctx := context.Background()
+
+	// Create three async computations with different types
+	a1 := NewAsync(ctx, func(ctx context.Context) string {
+		time.Sleep(300 * time.Millisecond)
+		return "slow string"
+	})
+
+	a2 := NewAsync(ctx, func(ctx context.Context) int {
+		time.Sleep(200 * time.Millisecond)
+		return 42
+	})
+
+	a3 := NewAsync(ctx, func(ctx context.Context) float64 {
+		time.Sleep(100 * time.Millisecond)
+		return 3.14
+	})
+
+	// WaitEither3 should return the result of the faster computation
+	result, err := WaitEither3(a1, a2, a3)
+
+	if err != nil {
+		t.Errorf("WaitEither3 returned error: %v", err)
+	}
+
+	// The float64 computation should complete first
+	if result != 3.14 {
+		t.Errorf("WaitEither3 returned %v, expected %v", result, 3.14)
+	}
+
+	// Test with error handling
+	a4 := NewAsync(ctx, func(ctx context.Context) string {
+		panic("test panic")
+	})
+
+	a5 := NewAsync(ctx, func(ctx context.Context) int {
+		time.Sleep(200 * time.Millisecond)
+		return 42
+	})
+
+	a6 := NewAsync(ctx, func(ctx context.Context) float64 {
+		time.Sleep(100 * time.Millisecond)
+		return 3.14
+	})
+
+	// WaitEither3 should return the successful result even if one computation panics
+	result, err = WaitEither3(a4, a5, a6)
+	if err != nil {
+		t.Errorf("WaitEither3 returned error: %v", err)
+	}
+	if result != 3.14 {
+		t.Errorf("WaitEither3 returned %v, expected %v", result, 3.14)
+	}
+}
+
+func TestWaitBoth3(t *testing.T) {
+	ctx := context.Background()
+
+	// Create three async computations
+	a1 := NewAsync(ctx, func(ctx context.Context) string {
+		time.Sleep(100 * time.Millisecond)
+		return "first"
+	})
+
+	a2 := NewAsync(ctx, func(ctx context.Context) int {
+		time.Sleep(200 * time.Millisecond)
+		return 42
+	})
+
+	a3 := NewAsync(ctx, func(ctx context.Context) float64 {
+		time.Sleep(300 * time.Millisecond)
+		return 3.14
+	})
+
+	// WaitBoth3 should return all three results
+	str, num, flt, err := WaitBoth3(a1, a2, a3)
+
+	if err != nil {
+		t.Errorf("WaitBoth3 returned error: %v", err)
+	}
+
+	if str != "first" {
+		t.Errorf("WaitBoth3 returned %v, expected %v", str, "first")
+	}
+
+	if num != 42 {
+		t.Errorf("WaitBoth3 returned %v, expected %v", num, 42)
+	}
+
+	if flt != 3.14 {
+		t.Errorf("WaitBoth3 returned %v, expected %v", flt, 3.14)
+	}
+}

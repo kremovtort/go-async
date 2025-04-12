@@ -136,49 +136,6 @@ func (a *Async[T]) Cancel() {
 	a.done = true
 }
 
-// Either runs two computations in parallel and returns the result of the first one to complete
-func Either[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (interface{}, error) {
-	a1 := NewAsync(ctx, f1)
-	a2 := NewAsync(ctx, f2)
-
-	select {
-	case result := <-a1.result:
-		a2.Cancel()
-		return result, nil
-	case err := <-a1.err:
-		a2.Cancel()
-		return nil, err
-	case result := <-a2.result:
-		a1.Cancel()
-		return result, nil
-	case err := <-a2.err:
-		a1.Cancel()
-		return nil, err
-	case <-ctx.Done():
-		a1.Cancel()
-		a2.Cancel()
-		return nil, ctx.Err()
-	}
-}
-
-// Both runs two computations in parallel and waits for both to complete
-func Both[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (T1, T2, error) {
-	a1 := NewAsync(ctx, f1)
-	a2 := NewAsync(ctx, f2)
-
-	result1, err1 := a1.Wait()
-	result2, err2 := a2.Wait()
-
-	if err1 != nil {
-		return result1, result2, err1
-	}
-	if err2 != nil {
-		return result1, result2, err2
-	}
-
-	return result1, result2, nil
-}
-
 // WaitAny waits for any of the async computations to complete and returns its result
 func WaitAny[T any](asyncs ...*Async[T]) (T, error) {
 	if len(asyncs) == 0 {
@@ -287,6 +244,144 @@ func WaitEither[T1, T2 any](a1 *Async[T1], a2 *Async[T2]) (interface{}, error) {
 	return nil, r.err
 }
 
+// WaitEither3 waits for any of three async computations to complete and returns its result
+func WaitEither3[T1, T2, T3 any](a1 *Async[T1], a2 *Async[T2], a3 *Async[T3]) (interface{}, error) {
+	type result struct {
+		value interface{}
+		err   error
+		index int
+	}
+	results := make(chan result, 3)
+
+	go func() {
+		value, err := a1.Wait()
+		results <- result{value, err, 0}
+	}()
+
+	go func() {
+		value, err := a2.Wait()
+		results <- result{value, err, 1}
+	}()
+
+	go func() {
+		value, err := a3.Wait()
+		results <- result{value, err, 2}
+	}()
+
+	r := <-results
+
+	if r.err == nil {
+		switch r.index {
+		case 0:
+			a2.Cancel()
+			a3.Cancel()
+		case 1:
+			a1.Cancel()
+			a3.Cancel()
+		case 2:
+			a1.Cancel()
+			a2.Cancel()
+		}
+		return r.value, nil
+	}
+
+	r2 := <-results
+	if r2.err == nil {
+		switch r2.index {
+		case 0:
+			a2.Cancel()
+			a3.Cancel()
+		case 1:
+			a1.Cancel()
+			a3.Cancel()
+		case 2:
+			a1.Cancel()
+			a2.Cancel()
+		}
+		return r2.value, nil
+	}
+
+	r3 := <-results
+	if r3.err == nil {
+		switch r3.index {
+		case 0:
+			a2.Cancel()
+			a3.Cancel()
+		case 1:
+			a1.Cancel()
+			a3.Cancel()
+		case 2:
+			a1.Cancel()
+			a2.Cancel()
+		}
+		return r3.value, nil
+	}
+
+	return nil, r.err
+}
+
+// WaitBoth3 waits for all three async computations to complete and returns their results
+func WaitBoth3[T1, T2, T3 any](a1 *Async[T1], a2 *Async[T2], a3 *Async[T3]) (T1, T2, T3, error) {
+	result1, err1 := a1.Wait()
+	result2, err2 := a2.Wait()
+	result3, err3 := a3.Wait()
+
+	if err1 != nil {
+		return result1, result2, result3, err1
+	}
+	if err2 != nil {
+		return result1, result2, result3, err2
+	}
+	if err3 != nil {
+		return result1, result2, result3, err3
+	}
+
+	return result1, result2, result3, nil
+}
+
+// Either runs two computations in parallel and returns the result of the first one to complete
+func Either[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (interface{}, error) {
+	a1 := NewAsync(ctx, f1)
+	a2 := NewAsync(ctx, f2)
+
+	select {
+	case result := <-a1.result:
+		a2.Cancel()
+		return result, nil
+	case err := <-a1.err:
+		a2.Cancel()
+		return nil, err
+	case result := <-a2.result:
+		a1.Cancel()
+		return result, nil
+	case err := <-a2.err:
+		a1.Cancel()
+		return nil, err
+	case <-ctx.Done():
+		a1.Cancel()
+		a2.Cancel()
+		return nil, ctx.Err()
+	}
+}
+
+// Both runs two computations in parallel and waits for both to complete
+func Both[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (T1, T2, error) {
+	a1 := NewAsync(ctx, f1)
+	a2 := NewAsync(ctx, f2)
+
+	result1, err1 := a1.Wait()
+	result2, err2 := a2.Wait()
+
+	if err1 != nil {
+		return result1, result2, err1
+	}
+	if err2 != nil {
+		return result1, result2, err2
+	}
+
+	return result1, result2, nil
+}
+
 // All runs multiple computations in parallel and waits for all to complete
 func All[T any](ctx context.Context, fs ...func(context.Context) T) ([]T, error) {
 	if len(fs) == 0 {
@@ -314,4 +409,66 @@ func Any[T any](ctx context.Context, fs ...func(context.Context) T) (T, error) {
 	}
 
 	return WaitAny(asyncs...)
+}
+
+// Either3 runs three computations in parallel and returns the result of the first one to complete
+func Either3[T1, T2, T3 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2, f3 func(context.Context) T3) (interface{}, error) {
+	a1 := NewAsync(ctx, f1)
+	a2 := NewAsync(ctx, f2)
+	a3 := NewAsync(ctx, f3)
+
+	select {
+	case result := <-a1.result:
+		a2.Cancel()
+		a3.Cancel()
+		return result, nil
+	case err := <-a1.err:
+		a2.Cancel()
+		a3.Cancel()
+		return nil, err
+	case result := <-a2.result:
+		a1.Cancel()
+		a3.Cancel()
+		return result, nil
+	case err := <-a2.err:
+		a1.Cancel()
+		a3.Cancel()
+		return nil, err
+	case result := <-a3.result:
+		a1.Cancel()
+		a2.Cancel()
+		return result, nil
+	case err := <-a3.err:
+		a1.Cancel()
+		a2.Cancel()
+		return nil, err
+	case <-ctx.Done():
+		a1.Cancel()
+		a2.Cancel()
+		a3.Cancel()
+		return nil, ctx.Err()
+	}
+}
+
+// Both3 runs three computations in parallel and waits for all to complete
+func Both3[T1, T2, T3 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2, f3 func(context.Context) T3) (T1, T2, T3, error) {
+	a1 := NewAsync(ctx, f1)
+	a2 := NewAsync(ctx, f2)
+	a3 := NewAsync(ctx, f3)
+
+	result1, err1 := a1.Wait()
+	result2, err2 := a2.Wait()
+	result3, err3 := a3.Wait()
+
+	if err1 != nil {
+		return result1, result2, result3, err1
+	}
+	if err2 != nil {
+		return result1, result2, result3, err2
+	}
+	if err3 != nil {
+		return result1, result2, result3, err3
+	}
+
+	return result1, result2, result3, nil
 }
