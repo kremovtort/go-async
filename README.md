@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kremovtort/go-async/pkg/async"
+	async "github.com/kremovtort/go-async"
 )
 
 func main() {
@@ -62,7 +62,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kremovtort/go-async/pkg/async"
+	async "github.com/kremovtort/go-async"
 )
 
 func main() {
@@ -102,7 +102,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kremovtort/go-async/pkg/async"
+	async "github.com/kremovtort/go-async"
 )
 
 func main() {
@@ -158,7 +158,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kremovtort/go-async/pkg/async"
+	async "github.com/kremovtort/go-async"
 )
 
 func main() {
@@ -184,92 +184,6 @@ func main() {
 }
 ```
 
-## API
-
-### NewAsync
-
-```go
-func NewAsync[T any](ctx context.Context, f func(context.Context) T) *Async[T]
-```
-
-Creates a new async computation that will execute the function `f` in a goroutine.
-
-### Wait
-
-```go
-func (a *Async[T]) Wait() (T, error)
-```
-
-Waits for the async computation to complete and returns its result.
-
-### Poll
-
-```go
-func (a *Async[T]) Poll() (T, bool, error)
-```
-
-Checks if the async computation has completed without blocking. Returns the result, a boolean indicating if the computation is done, and any error that occurred.
-
-### Cancel
-
-```go
-func (a *Async[T]) Cancel() error
-```
-
-Cancels the async computation.
-
-### Either
-
-```go
-func Either[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (interface{}, error)
-```
-
-Runs two computations in parallel and returns the result of the first one to complete.
-
-### Both
-
-```go
-func Both[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (T1, T2, error)
-```
-
-Runs two computations in parallel and waits for both to complete.
-
-### WaitAny
-
-```go
-func WaitAny[T any](asyncs ...*Async[T]) (T, error)
-```
-
-Waits for any of the async computations to complete and returns its result.
-
-### WaitAll
-
-```go
-func WaitAll[T any](asyncs ...*Async[T]) ([]T, error)
-```
-
-Waits for all async computations to complete and returns their results.
-
-### WaitBoth
-
-```go
-func WaitBoth[T1, T2 any](a1 *Async[T1], a2 *Async[T2]) (T1, T2, error)
-```
-
-Waits for both async computations to complete and returns their results.
-
-### WaitEither
-
-```go
-func WaitEither[T1, T2 any](a1 *Async[T1], a2 *Async[T2]) (interface{}, error)
-```
-
-Waits for either of two async computations to complete and returns its result.
-
-## License
-
-MIT
-
 ## Development
 
 This project uses Nix flakes for development environment management. To get started:
@@ -287,14 +201,11 @@ This project uses Nix flakes for development environment management. To get star
 
 This will provide you with all necessary development tools:
 - Go compiler
+- gotools
 - gopls (Go language server)
 - delve (Go debugger)
 - golangci-lint (Go linter)
 - just (Task runner)
-
-## License
-
-MIT License
 
 ## Contributing
 

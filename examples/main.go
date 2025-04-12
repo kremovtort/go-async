@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kremovtort/go-async/pkg/async"
+	async "github.com/kremovtort/go-async"
 )
 
 func main() {
