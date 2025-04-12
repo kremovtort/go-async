@@ -27,3 +27,4 @@ go.work
 result
 result-* 
 .direnv
+.envrc
