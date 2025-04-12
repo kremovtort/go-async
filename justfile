@@ -41,7 +41,7 @@ example:
 
 # Generate documentation
 docs:
-    godoc -http=:6060
+    pkgsite -http=:6060
 
 # Create a new release
 release VERSION:

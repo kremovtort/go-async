@@ -16,9 +16,9 @@
           packages = with pkgs; [
             go
             gopls
-            gotools
             delve
             golangci-lint
+            pkgsite
             just
           ];
 
