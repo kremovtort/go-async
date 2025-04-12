@@ -43,7 +43,7 @@ func main() {
 		return "Timeout occurred"
 	}
 
-	raceResult, err := async.Race(timeoutCtx, slowTask, timeoutTask)
+	raceResult, err := async.Either(timeoutCtx, slowTask, timeoutTask)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 	} else {
@@ -54,7 +54,7 @@ func main() {
 	fmt.Println("\nExample 3: Using Concurrently to run multiple computations")
 	ctx2 := context.Background()
 
-	str, num, err := async.Concurrently(ctx2,
+	str, num, err := async.Both(ctx2,
 		func(ctx context.Context) string {
 			time.Sleep(1 * time.Second)
 			return "First computation"

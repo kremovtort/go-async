@@ -54,7 +54,7 @@ func TestPoll(t *testing.T) {
 	})
 
 	// Poll before the computation completes
-	result, done, err := a.Poll()
+	_, done, err := a.Poll()
 	if done {
 		t.Error("Poll should return done=false before computation completes")
 	}
@@ -66,7 +66,7 @@ func TestPoll(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Poll after the computation completes
-	result, done, err = a.Poll()
+	result, done, err := a.Poll()
 	if !done {
 		t.Error("Poll should return done=true after computation completes")
 	}
@@ -100,11 +100,11 @@ func TestCancel(t *testing.T) {
 	}
 }
 
-func TestRace(t *testing.T) {
+func TestEither(t *testing.T) {
 	ctx := context.Background()
 
-	// Test race with two computations
-	result, err := Race(ctx,
+	// Test either with two computations
+	result, err := Either(ctx,
 		func(ctx context.Context) string {
 			time.Sleep(200 * time.Millisecond)
 			return "slow"
@@ -116,20 +116,20 @@ func TestRace(t *testing.T) {
 	)
 
 	if err != nil {
-		t.Errorf("Race returned error: %v", err)
+		t.Errorf("Either returned error: %v", err)
 	}
 
 	// The int computation should complete first
 	if result != 42 {
-		t.Errorf("Race returned %v, expected %v", result, 42)
+		t.Errorf("Either returned %v, expected %v", result, 42)
 	}
 }
 
-func TestConcurrently(t *testing.T) {
+func TestBoth(t *testing.T) {
 	ctx := context.Background()
 
-	// Test concurrently with two computations
-	str, num, err := Concurrently(ctx,
+	// Test both with two computations
+	str, num, err := Both(ctx,
 		func(ctx context.Context) string {
 			time.Sleep(100 * time.Millisecond)
 			return "first"
@@ -141,15 +141,15 @@ func TestConcurrently(t *testing.T) {
 	)
 
 	if err != nil {
-		t.Errorf("Concurrently returned error: %v", err)
+		t.Errorf("Both returned error: %v", err)
 	}
 
 	if str != "first" {
-		t.Errorf("Concurrently returned %v, expected %v", str, "first")
+		t.Errorf("Both returned %v, expected %v", str, "first")
 	}
 
 	if num != 42 {
-		t.Errorf("Concurrently returned %v, expected %v", num, 42)
+		t.Errorf("Both returned %v, expected %v", num, 42)
 	}
 }
 
@@ -271,5 +271,137 @@ func TestEmptyWaitAny(t *testing.T) {
 	_, err := WaitAny[string]()
 	if err == nil {
 		t.Error("WaitAny should return error when no computations are provided")
+	}
+}
+
+func TestMultipleWaitCalls(t *testing.T) {
+	ctx := context.Background()
+
+	// Create an async computation
+	a := NewAsync(ctx, func(ctx context.Context) string {
+		time.Sleep(100 * time.Millisecond)
+		return "result"
+	})
+
+	// First call to Wait
+	result1, err1 := a.Wait()
+	if err1 != nil {
+		t.Errorf("First Wait returned error: %v", err1)
+	}
+	if result1 != "result" {
+		t.Errorf("First Wait returned %v, expected %v", result1, "result")
+	}
+
+	// Second call to Wait should return the same result
+	result2, err2 := a.Wait()
+	if err2 != nil {
+		t.Errorf("Second Wait returned error: %v", err2)
+	}
+	if result2 != "result" {
+		t.Errorf("Second Wait returned %v, expected %v", result2, "result")
+	}
+
+	// Third call to Wait should also return the same result
+	result3, err3 := a.Wait()
+	if err3 != nil {
+		t.Errorf("Third Wait returned error: %v", err3)
+	}
+	if result3 != "result" {
+		t.Errorf("Third Wait returned %v, expected %v", result3, "result")
+	}
+}
+
+func TestMultiplePollCalls(t *testing.T) {
+	ctx := context.Background()
+
+	// Create an async computation
+	a := NewAsync(ctx, func(ctx context.Context) string {
+		time.Sleep(100 * time.Millisecond)
+		return "result"
+	})
+
+	// Wait for the result to be available
+	time.Sleep(200 * time.Millisecond)
+
+	// First call to Poll
+	result1, done1, err1 := a.Poll()
+	if !done1 {
+		t.Error("First Poll returned not done")
+	}
+	if err1 != nil {
+		t.Errorf("First Poll returned error: %v", err1)
+	}
+	if result1 != "result" {
+		t.Errorf("First Poll returned %v, expected %v", result1, "result")
+	}
+
+	// Second call to Poll should return the same result
+	result2, done2, err2 := a.Poll()
+	if !done2 {
+		t.Error("Second Poll returned not done")
+	}
+	if err2 != nil {
+		t.Errorf("Second Poll returned error: %v", err2)
+	}
+	if result2 != "result" {
+		t.Errorf("Second Poll returned %v, expected %v", result2, "result")
+	}
+
+	// Third call to Poll should also return the same result
+	result3, done3, err3 := a.Poll()
+	if !done3 {
+		t.Error("Third Poll returned not done")
+	}
+	if err3 != nil {
+		t.Errorf("Third Poll returned error: %v", err3)
+	}
+	if result3 != "result" {
+		t.Errorf("Third Poll returned %v, expected %v", result3, "result")
+	}
+}
+
+func TestWaitEither(t *testing.T) {
+	ctx := context.Background()
+
+	// Create two async computations with different types
+	a1 := NewAsync(ctx, func(ctx context.Context) string {
+		time.Sleep(200 * time.Millisecond)
+		return "slow string"
+	})
+
+	a2 := NewAsync(ctx, func(ctx context.Context) int {
+		time.Sleep(100 * time.Millisecond)
+		return 42
+	})
+
+	// WaitEither should return the result of the faster computation
+	result, err := WaitEither(a1, a2)
+
+	if err != nil {
+		t.Errorf("WaitEither returned error: %v", err)
+	}
+
+	// The int computation should complete first
+	if result != 42 {
+		t.Errorf("WaitEither returned %v, expected %v", result, 42)
+	}
+
+	// Test with error handling
+	a3 := NewAsync(ctx, func(ctx context.Context) string {
+		panic("test panic")
+	})
+
+	a4 := NewAsync(ctx, func(ctx context.Context) int {
+		time.Sleep(100 * time.Millisecond)
+		return 42
+	})
+
+	// WaitEither should return the successful result from a4 even if a3 panics
+	result, err = WaitEither(a3, a4)
+	if err != nil {
+		t.Errorf("WaitEither returned error: %v", err)
+	}
+	if result != 42 {
+		t.Errorf("WaitEither returned %v, expected %v", result, 42)
 	}
 }
