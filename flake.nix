@@ -18,6 +18,7 @@
             gopls
             delve
             golangci-lint
+            just
           ];
 
           shellHook = ''
@@ -27,6 +28,7 @@
             echo "  - gopls: Go language server"
             echo "  - delve: Go debugger"
             echo "  - golangci-lint: Go linter"
+            echo "  - just: Command runner"
           '';
         };
       });
