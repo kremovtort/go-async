@@ -48,15 +48,3 @@ release VERSION:
     #!/usr/bin/env bash
     git tag -a v{{VERSION}} -m "Release v{{VERSION}}"
     git push origin v{{VERSION}}
-
-# Run a specific test
-test-one TEST_PATH:
-    go test -v {{TEST_PATH}}
-
-# Run benchmarks
-bench:
-    go test -bench=. -benchmem ./...
-
-# Run a specific benchmark
-bench-one BENCH_PATH:
-    go test -bench={{BENCH_PATH}} -benchmem ./... 
