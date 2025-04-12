@@ -124,45 +124,16 @@ func (a *Async[T]) Poll() (T, bool, error) {
 }
 
 // Cancel cancels the async computation
-func (a *Async[T]) Cancel() error {
+func (a *Async[T]) Cancel() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.done {
-		return nil
+		return
 	}
 
 	a.cancel()
 	a.done = true
-	return nil
-}
-
-// getResult is a helper function to get the result from the channels
-func (a *Async[T]) getResult() (T, error) {
-	if a.hasResult {
-		return a.storedResult, a.storedErr
-	}
-
-	select {
-	case result := <-a.result:
-		a.mu.Lock()
-		a.hasResult = true
-		a.storedResult = result
-		a.storedErr = nil
-		a.mu.Unlock()
-		return result, nil
-	case err := <-a.err:
-		a.mu.Lock()
-		a.hasResult = true
-		var zero T
-		a.storedResult = zero
-		a.storedErr = err
-		a.mu.Unlock()
-		return a.storedResult, err
-	default:
-		var zero T
-		return zero, fmt.Errorf("no result available")
-	}
 }
 
 // Either runs two computations in parallel and returns the result of the first one to complete

@@ -87,14 +87,10 @@ func TestCancel(t *testing.T) {
 		return "result"
 	})
 
-	// Cancel the computation
-	err := a.Cancel()
-	if err != nil {
-		t.Errorf("Cancel returned error: %v", err)
-	}
+	a.Cancel()
 
 	// Wait should return context cancelled error
-	_, err = a.Wait()
+	_, err := a.Wait()
 	if err == nil {
 		t.Error("Wait should return error after cancellation")
 	}
