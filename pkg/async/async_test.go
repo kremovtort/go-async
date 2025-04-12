@@ -401,3 +401,66 @@ func TestWaitEither(t *testing.T) {
 		t.Errorf("WaitEither returned %v, expected %v", result, 42)
 	}
 }
+
+func TestAll(t *testing.T) {
+	ctx := context.Background()
+
+	// Test All with multiple computations
+	results, err := All(ctx,
+		func(ctx context.Context) string {
+			time.Sleep(100 * time.Millisecond)
+			return "first"
+		},
+		func(ctx context.Context) string {
+			time.Sleep(200 * time.Millisecond)
+			return "second"
+		},
+		func(ctx context.Context) string {
+			time.Sleep(300 * time.Millisecond)
+			return "third"
+		},
+	)
+
+	if err != nil {
+		t.Errorf("All returned error: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Errorf("All returned %d results, expected 3", len(results))
+	}
+
+	expected := []string{"first", "second", "third"}
+	for i, result := range results {
+		if result != expected[i] {
+			t.Errorf("All[%d] returned %v, expected %v", i, result, expected[i])
+		}
+	}
+}
+
+func TestAny(t *testing.T) {
+	ctx := context.Background()
+
+	// Test Any with multiple computations
+	result, err := Any(ctx,
+		func(ctx context.Context) string {
+			time.Sleep(300 * time.Millisecond)
+			return "slow"
+		},
+		func(ctx context.Context) string {
+			time.Sleep(100 * time.Millisecond)
+			return "fast"
+		},
+		func(ctx context.Context) string {
+			time.Sleep(200 * time.Millisecond)
+			return "medium"
+		},
+	)
+
+	if err != nil {
+		t.Errorf("Any returned error: %v", err)
+	}
+
+	if result != "fast" {
+		t.Errorf("Any returned %v, expected %v", result, "fast")
+	}
+}

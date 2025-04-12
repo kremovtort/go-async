@@ -286,3 +286,32 @@ func WaitEither[T1, T2 any](a1 *Async[T1], a2 *Async[T2]) (interface{}, error) {
 
 	return nil, r.err
 }
+
+// All runs multiple computations in parallel and waits for all to complete
+func All[T any](ctx context.Context, fs ...func(context.Context) T) ([]T, error) {
+	if len(fs) == 0 {
+		return nil, nil
+	}
+
+	asyncs := make([]*Async[T], len(fs))
+	for i, f := range fs {
+		asyncs[i] = NewAsync(ctx, f)
+	}
+
+	return WaitAll(asyncs...)
+}
+
+// Any runs multiple computations in parallel and returns the result of the first one to complete
+func Any[T any](ctx context.Context, fs ...func(context.Context) T) (T, error) {
+	if len(fs) == 0 {
+		var zero T
+		return zero, fmt.Errorf("no computations provided")
+	}
+
+	asyncs := make([]*Async[T], len(fs))
+	for i, f := range fs {
+		asyncs[i] = NewAsync(ctx, f)
+	}
+
+	return WaitAny(asyncs...)
+}
