@@ -201,10 +201,10 @@ This project uses Nix flakes for development environment management. To get star
 
 This will provide you with all necessary development tools:
 - Go compiler
-- gotools
 - gopls (Go language server)
 - delve (Go debugger)
 - golangci-lint (Go linter)
+- pkgsite (Go documentation generator)
 - just (Task runner)
 
 ## Contributing
