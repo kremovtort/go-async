@@ -1,24 +1,28 @@
 # go-async
 
-A Go library for asynchronous computations with a clean and consistent API.
+A Go package that provides an elegant abstraction for asynchronous computations. The package introduces the concept of `Async[T]` - a type-safe wrapper around concurrent operations that will eventually produce a value of type `T`.
 
-## Features
+## Overview
 
-- Simple and intuitive API for asynchronous computations
-- Context support for cancellation and timeouts
-- Non-blocking polling for results
-- Utilities for working with multiple async computations
-- Type-safe with Go generics
+This package offers a higher-level interface for managing concurrent computations in Go. Instead of directly dealing with goroutines and channels, it provides a clean abstraction where an `Async[T]` represents a computation that will eventually deliver a value of type `T`. The package includes utilities for:
 
-## Installation
+- Creating asynchronous computations
+- Waiting for their results
+- Polling for completion
+- Cancelling operations
+- Combining multiple computations
+- Error handling and panic recovery
 
-```bash
-go get github.com/kremovtort/go-async
-```
+## Key Features
 
-## Usage
+- **Type Safety**: Leverages Go generics to ensure type safety across all operations
+- **Context Support**: Full integration with Go's context package for cancellation and timeouts
+- **Composable**: Functions to combine multiple async computations (`Either`, `Both`, `All`, `Any`)
+- **Error Handling**: Built-in panic recovery and error propagation
+- **Resource Management**: Automatic cleanup of resources through cancellation
+- **Non-blocking Operations**: `Poll()` method for checking completion without blocking
 
-### Basic Usage
+## Example Usage
 
 ```go
 package main
