@@ -4,471 +4,302 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
-// Async represents an asynchronous computation that will return a value of type T
-type Async[T any] struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	result       chan T
-	err          chan error
-	done         bool
-	mu           sync.Mutex
-	storedResult T
-	storedErr    error
-	hasResult    bool
+// An asynchronous action spawned by NewAsync. Asynchronous actions are executed in a separate goroutine, and operations are provided for waiting for asynchronous actions to complete and obtaining their results (see e.g. Wait).
+type Async[T any] interface {
+	// Wait returns a channel that will receive the result of the async operation.
+	Wait() <-chan T
+
+	// WaitPanic returns a channel that will receive the panic of the async operation.
+	WaitPanic() <-chan any
+
+	// WaitCancel returns a channel that will receive a struct{} when the async operation is cancelled.
+	WaitCancel() <-chan struct{}
+
+	// Poll returns the result of the async operation and a boolean indicating if the operation is done.
+	Poll() (T, bool)
+
+	// PollState returns the state of the async operation and the result if it is done.
+	PollState() AsyncPollResult[T]
+
+	// State returns the state of the async operation.
+	State() AsyncState
+
+	// Done returns true if the async operation is successfully completed, e.g. not cancelled or paniced and result is available.
+	Done() bool
+
+	// Cancelled returns true if the async operation is cancelled.
+	Cancelled() bool
+
+	// Paniced returns true if the async operation paniced.
+	Paniced() bool
+
+	// Pending returns true if the async operation is still in progress.
+	Pending() bool
 }
 
-// NewAsync runs a function asynchronously and returns an Async handle to the computation
-func NewAsync[T any](ctx context.Context, f func(context.Context) T) *Async[T] {
-	ctx, cancel := context.WithCancel(ctx)
+type AsyncPollResult[T any] struct {
+	State  AsyncState
+	Result T
+	Panic  any
+}
 
-	a := &Async[T]{
-		ctx:    ctx,
-		cancel: cancel,
-		result: make(chan T, 1),
-		err:    make(chan error, 1),
+type AsyncState int32
+
+const (
+	// Pending means the async operation is still in progress.
+	Pending AsyncState = iota
+	// Done means the async operation is successfully completed and result is available.
+	Done
+	// Cancelled means the async operation is cancelled.
+	Cancelled
+	// Paniced means the async operation paniced.
+	Paniced
+)
+
+type async[T any] struct {
+	ctx                context.Context
+	state              atomic.Int32
+	result             atomic.Value
+	panic              atomic.Value
+	mu                 sync.RWMutex
+	waitResultChannels chan (chan T)
+	waitCancelChannels chan (chan struct{})
+	waitPanicChannels  chan (chan any)
+}
+
+type Result[T any] struct {
+	Value T
+	Error error
+}
+
+type Result2[T1 any, T2 any] struct {
+	Value1 T1
+	Value2 T2
+	Error  error
+}
+
+func NewAsync[T any](ctx context.Context, fn func(ctx context.Context) T) Async[T] {
+	waitResultChannels := make(chan (chan T), 8)
+	waitCancelChannels := make(chan (chan struct{}), 8)
+	waitPanicChannels := make(chan (chan any), 8)
+
+	a := &async[T]{
+		ctx:                ctx,
+		state:              atomic.Int32{},
+		result:             atomic.Value{},
+		panic:              atomic.Value{},
+		mu:                 sync.RWMutex{},
+		waitResultChannels: waitResultChannels,
+		waitCancelChannels: waitCancelChannels,
+		waitPanicChannels:  waitPanicChannels,
 	}
+	a.state.Store(int32(Pending))
 
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				a.err <- fmt.Errorf("panic in async computation: %v", r)
-			}
-		}()
-
-		result := f(ctx)
+	go func(a *async[T]) {
+		resultChannel := make(chan T, 1)
+		panicChannel := make(chan any, 1)
+		go func(a *async[T], resultChannel chan T, panicChannel chan any) {
+			defer func() {
+				if r := recover(); r != nil {
+					panicChannel <- r
+				}
+			}()
+			result := fn(a.ctx)
+			resultChannel <- result
+		}(a, resultChannel, panicChannel)
 
 		select {
-		case a.result <- result:
-		case <-ctx.Done():
+		case <-a.ctx.Done():
+			a.state.Store(int32(Cancelled))
+		case result := <-resultChannel:
+			a.result.Store(result)
+			a.state.Store(int32(Done))
+		case panic := <-panicChannel:
+			a.panic.Store(panic)
+			a.state.Store(int32(Paniced))
 		}
-	}()
+
+		a.sendResultAndCloseChannels()
+	}(a)
 
 	return a
 }
 
-// Wait waits for the async computation to complete and returns its result
-func (a *Async[T]) Wait() (T, error) {
-	a.mu.Lock()
-	if a.hasResult {
-		a.mu.Unlock()
-		return a.storedResult, a.storedErr
-	}
-	a.mu.Unlock()
-
-	select {
-	case result := <-a.result:
-		a.mu.Lock()
-		a.done = true
-		a.hasResult = true
-		a.storedResult = result
-		a.storedErr = nil
-		a.mu.Unlock()
-		return result, nil
-	case err := <-a.err:
-		a.mu.Lock()
-		a.done = true
-		a.hasResult = true
-		var zero T
-		a.storedResult = zero
-		a.storedErr = err
-		a.mu.Unlock()
-		return a.storedResult, err
-	case <-a.ctx.Done():
-		a.mu.Lock()
-		a.done = true
-		a.hasResult = true
-		var zero T
-		a.storedResult = zero
-		a.storedErr = a.ctx.Err()
-		a.mu.Unlock()
-		return a.storedResult, a.ctx.Err()
-	}
-}
-
-// Poll checks if the async computation has completed without blocking
-func (a *Async[T]) Poll() (T, bool, error) {
+func (a *async[T]) sendResultAndCloseChannels() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	defer close(a.waitResultChannels)
+	defer close(a.waitCancelChannels)
+	defer close(a.waitPanicChannels)
 
-	if a.hasResult {
-		return a.storedResult, true, a.storedErr
-	}
-
-	select {
-	case result := <-a.result:
-		a.done = true
-		a.hasResult = true
-		a.storedResult = result
-		a.storedErr = nil
-		return result, true, nil
-	case err := <-a.err:
-		a.done = true
-		a.hasResult = true
-		var zero T
-		a.storedResult = zero
-		a.storedErr = err
-		return a.storedResult, true, err
-	case <-a.ctx.Done():
-		a.done = true
-		a.hasResult = true
-		var zero T
-		a.storedResult = zero
-		a.storedErr = a.ctx.Err()
-		return a.storedResult, true, a.ctx.Err()
+	state := AsyncState(a.state.Load())
+	switch state {
+	case Done:
+		result := a.result.Load().(T)
+		for {
+			select {
+			case ch, ok := <-a.waitResultChannels:
+				if !ok {
+					panic("waitResultChannels unexpectedly closed")
+				}
+				ch <- result
+			default:
+				goto Done
+			}
+		}
+	case Cancelled:
+		for {
+			select {
+			case ch, ok := <-a.waitCancelChannels:
+				if !ok {
+					panic("waitCancelChannels unexpectedly closed")
+				}
+				ch <- struct{}{}
+			default:
+				goto Done
+			}
+		}
+	case Paniced:
+		panicValue := a.panic.Load()
+		for {
+			select {
+			case ch, ok := <-a.waitPanicChannels:
+				if !ok {
+					panic("waitPanicChannels unexpectedly closed")
+				}
+				ch <- panicValue
+			default:
+				goto Done
+			}
+		}
 	default:
-		var zero T
-		return zero, false, nil
+		panic(fmt.Sprintf("unexpected state %d", state))
 	}
+Done:
 }
 
-// Cancel cancels the async computation
-func (a *Async[T]) Cancel() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.done {
-		return
-	}
-
-	a.cancel()
-	a.done = true
-}
-
-// WaitAny waits for any of the async computations to complete and returns its result
-func WaitAny[T any](asyncs ...*Async[T]) (T, error) {
-	if len(asyncs) == 0 {
-		var zero T
-		return zero, fmt.Errorf("no async computations provided")
-	}
-
-	type result struct {
-		value T
-		err   error
-	}
-	results := make(chan result, len(asyncs))
-
-	for _, a := range asyncs {
-		go func(a *Async[T]) {
-			value, err := a.Wait()
-			results <- result{value, err}
-		}(a)
-	}
-
-	r := <-results
-
-	for _, a := range asyncs {
-		a.Cancel()
-	}
-
-	return r.value, r.err
-}
-
-// WaitAll waits for all async computations to complete and returns their results
-func WaitAll[T any](asyncs ...*Async[T]) ([]T, error) {
-	if len(asyncs) == 0 {
-		return nil, nil
-	}
-
-	results := make([]T, len(asyncs))
-	var firstErr error
-
-	for i, a := range asyncs {
-		result, err := a.Wait()
-		if err != nil && firstErr == nil {
-			firstErr = err
+func (a *async[T]) Wait() <-chan T {
+	for {
+		state := AsyncState(a.state.Load())
+		switch state {
+		case Pending:
+			locked := a.mu.TryRLock()
+			if !locked {
+				continue
+			} else {
+				defer a.mu.RUnlock()
+				ch := make(chan T, 1)
+				a.waitResultChannels <- ch
+				return ch
+			}
+		case Done:
+			ch := make(chan T, 1)
+			ch <- a.result.Load().(T)
+			return ch
+		default:
+			ch := make(chan T)
+			close(ch)
+			return ch
 		}
-		results[i] = result
 	}
-
-	return results, firstErr
 }
 
-// WaitBoth waits for both async computations to complete and returns their results
-func WaitBoth[T1, T2 any](a1 *Async[T1], a2 *Async[T2]) (T1, T2, error) {
-	result1, err1 := a1.Wait()
-	result2, err2 := a2.Wait()
-
-	if err1 != nil {
-		return result1, result2, err1
-	}
-	if err2 != nil {
-		return result1, result2, err2
-	}
-
-	return result1, result2, nil
-}
-
-// WaitEither waits for either of two async computations to complete and returns its result
-func WaitEither[T1, T2 any](a1 *Async[T1], a2 *Async[T2]) (interface{}, error) {
-	type result struct {
-		value interface{}
-		err   error
-		index int
-	}
-	results := make(chan result, 2)
-
-	go func() {
-		value, err := a1.Wait()
-		results <- result{value, err, 0}
-	}()
-
-	go func() {
-		value, err := a2.Wait()
-		results <- result{value, err, 1}
-	}()
-
-	r := <-results
-
-	if r.err == nil {
-		if r.index == 0 {
-			a2.Cancel()
-		} else {
-			a1.Cancel()
+func (a *async[T]) WaitPanic() <-chan any {
+	for {
+		state := AsyncState(a.state.Load())
+		switch state {
+		case Pending:
+			locked := a.mu.TryRLock()
+			if !locked {
+				continue
+			} else {
+				defer a.mu.RUnlock()
+				ch := make(chan any, 1)
+				a.waitPanicChannels <- ch
+				return ch
+			}
+		case Paniced:
+			ch := make(chan any, 1)
+			ch <- a.panic.Load()
+			return ch
+		default:
+			ch := make(chan any)
+			close(ch)
+			return ch
 		}
-		return r.value, nil
 	}
+}
 
-	r2 := <-results
-
-	if r2.err == nil {
-		if r2.index == 0 {
-			a2.Cancel()
-		} else {
-			a1.Cancel()
+func (a *async[T]) WaitCancel() <-chan struct{} {
+	for {
+		state := AsyncState(a.state.Load())
+		switch state {
+		case Pending:
+			locked := a.mu.TryRLock()
+			if !locked {
+				continue
+			} else {
+				defer a.mu.RUnlock()
+				ch := make(chan struct{}, 1)
+				a.waitCancelChannels <- ch
+				return ch
+			}
+		case Cancelled:
+			ch := make(chan struct{}, 1)
+			ch <- struct{}{}
+			return ch
+		default:
+			ch := make(chan struct{})
+			close(ch)
+			return ch
 		}
-		return r2.value, nil
-	}
-
-	return nil, r.err
-}
-
-// WaitEither3 waits for any of three async computations to complete and returns its result
-func WaitEither3[T1, T2, T3 any](a1 *Async[T1], a2 *Async[T2], a3 *Async[T3]) (interface{}, error) {
-	type result struct {
-		value interface{}
-		err   error
-		index int
-	}
-	results := make(chan result, 3)
-
-	go func() {
-		value, err := a1.Wait()
-		results <- result{value, err, 0}
-	}()
-
-	go func() {
-		value, err := a2.Wait()
-		results <- result{value, err, 1}
-	}()
-
-	go func() {
-		value, err := a3.Wait()
-		results <- result{value, err, 2}
-	}()
-
-	r := <-results
-
-	if r.err == nil {
-		switch r.index {
-		case 0:
-			a2.Cancel()
-			a3.Cancel()
-		case 1:
-			a1.Cancel()
-			a3.Cancel()
-		case 2:
-			a1.Cancel()
-			a2.Cancel()
-		}
-		return r.value, nil
-	}
-
-	r2 := <-results
-	if r2.err == nil {
-		switch r2.index {
-		case 0:
-			a2.Cancel()
-			a3.Cancel()
-		case 1:
-			a1.Cancel()
-			a3.Cancel()
-		case 2:
-			a1.Cancel()
-			a2.Cancel()
-		}
-		return r2.value, nil
-	}
-
-	r3 := <-results
-	if r3.err == nil {
-		switch r3.index {
-		case 0:
-			a2.Cancel()
-			a3.Cancel()
-		case 1:
-			a1.Cancel()
-			a3.Cancel()
-		case 2:
-			a1.Cancel()
-			a2.Cancel()
-		}
-		return r3.value, nil
-	}
-
-	return nil, r.err
-}
-
-// WaitBoth3 waits for all three async computations to complete and returns their results
-func WaitBoth3[T1, T2, T3 any](a1 *Async[T1], a2 *Async[T2], a3 *Async[T3]) (T1, T2, T3, error) {
-	result1, err1 := a1.Wait()
-	result2, err2 := a2.Wait()
-	result3, err3 := a3.Wait()
-
-	if err1 != nil {
-		return result1, result2, result3, err1
-	}
-	if err2 != nil {
-		return result1, result2, result3, err2
-	}
-	if err3 != nil {
-		return result1, result2, result3, err3
-	}
-
-	return result1, result2, result3, nil
-}
-
-// Either runs two computations in parallel and returns the result of the first one to complete
-func Either[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (interface{}, error) {
-	a1 := NewAsync(ctx, f1)
-	a2 := NewAsync(ctx, f2)
-
-	select {
-	case result := <-a1.result:
-		a2.Cancel()
-		return result, nil
-	case err := <-a1.err:
-		a2.Cancel()
-		return nil, err
-	case result := <-a2.result:
-		a1.Cancel()
-		return result, nil
-	case err := <-a2.err:
-		a1.Cancel()
-		return nil, err
-	case <-ctx.Done():
-		a1.Cancel()
-		a2.Cancel()
-		return nil, ctx.Err()
 	}
 }
 
-// Both runs two computations in parallel and waits for both to complete
-func Both[T1, T2 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2) (T1, T2, error) {
-	a1 := NewAsync(ctx, f1)
-	a2 := NewAsync(ctx, f2)
-
-	result1, err1 := a1.Wait()
-	result2, err2 := a2.Wait()
-
-	if err1 != nil {
-		return result1, result2, err1
-	}
-	if err2 != nil {
-		return result1, result2, err2
-	}
-
-	return result1, result2, nil
-}
-
-// All runs multiple computations in parallel and waits for all to complete
-func All[T any](ctx context.Context, fs ...func(context.Context) T) ([]T, error) {
-	if len(fs) == 0 {
-		return nil, nil
-	}
-
-	asyncs := make([]*Async[T], len(fs))
-	for i, f := range fs {
-		asyncs[i] = NewAsync(ctx, f)
-	}
-
-	return WaitAll(asyncs...)
-}
-
-// Any runs multiple computations in parallel and returns the result of the first one to complete
-func Any[T any](ctx context.Context, fs ...func(context.Context) T) (T, error) {
-	if len(fs) == 0 {
-		var zero T
-		return zero, fmt.Errorf("no computations provided")
-	}
-
-	asyncs := make([]*Async[T], len(fs))
-	for i, f := range fs {
-		asyncs[i] = NewAsync(ctx, f)
-	}
-
-	return WaitAny(asyncs...)
-}
-
-// Either3 runs three computations in parallel and returns the result of the first one to complete
-func Either3[T1, T2, T3 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2, f3 func(context.Context) T3) (interface{}, error) {
-	a1 := NewAsync(ctx, f1)
-	a2 := NewAsync(ctx, f2)
-	a3 := NewAsync(ctx, f3)
-
-	select {
-	case result := <-a1.result:
-		a2.Cancel()
-		a3.Cancel()
-		return result, nil
-	case err := <-a1.err:
-		a2.Cancel()
-		a3.Cancel()
-		return nil, err
-	case result := <-a2.result:
-		a1.Cancel()
-		a3.Cancel()
-		return result, nil
-	case err := <-a2.err:
-		a1.Cancel()
-		a3.Cancel()
-		return nil, err
-	case result := <-a3.result:
-		a1.Cancel()
-		a2.Cancel()
-		return result, nil
-	case err := <-a3.err:
-		a1.Cancel()
-		a2.Cancel()
-		return nil, err
-	case <-ctx.Done():
-		a1.Cancel()
-		a2.Cancel()
-		a3.Cancel()
-		return nil, ctx.Err()
+func (a *async[T]) PollState() AsyncPollResult[T] {
+	state := AsyncState(a.state.Load())
+	switch state {
+	case Pending:
+		return AsyncPollResult[T]{State: Pending}
+	case Done:
+		return AsyncPollResult[T]{State: Done, Result: a.result.Load().(T)}
+	case Cancelled:
+		return AsyncPollResult[T]{State: Cancelled}
+	case Paniced:
+		return AsyncPollResult[T]{State: Paniced, Panic: a.panic.Load()}
+	default:
+		panic(fmt.Sprintf("unexpected state %d", state))
 	}
 }
 
-// Both3 runs three computations in parallel and waits for all to complete
-func Both3[T1, T2, T3 any](ctx context.Context, f1 func(context.Context) T1, f2 func(context.Context) T2, f3 func(context.Context) T3) (T1, T2, T3, error) {
-	a1 := NewAsync(ctx, f1)
-	a2 := NewAsync(ctx, f2)
-	a3 := NewAsync(ctx, f3)
-
-	result1, err1 := a1.Wait()
-	result2, err2 := a2.Wait()
-	result3, err3 := a3.Wait()
-
-	if err1 != nil {
-		return result1, result2, result3, err1
+func (a *async[T]) Poll() (T, bool) {
+	state := AsyncState(a.state.Load())
+	if state == Done {
+		return a.result.Load().(T), true
 	}
-	if err2 != nil {
-		return result1, result2, result3, err2
-	}
-	if err3 != nil {
-		return result1, result2, result3, err3
-	}
+	var zero T
+	return zero, false
+}
 
-	return result1, result2, result3, nil
+func (a *async[T]) State() AsyncState {
+	return AsyncState(a.state.Load())
+}
+
+func (a *async[T]) Done() bool {
+	return a.State() == Done
+}
+
+func (a *async[T]) Cancelled() bool {
+	return a.State() == Cancelled
+}
+
+func (a *async[T]) Paniced() bool {
+	return a.State() == Paniced
+}
+
+func (a *async[T]) Pending() bool {
+	return a.State() == Pending
 }
