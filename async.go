@@ -24,20 +24,17 @@ type Async[T any] interface {
 	// PollState returns the state of the async operation and the result if it is done.
 	PollState() AsyncPollResult[T]
 
-	// State returns the state of the async operation.
-	State() AsyncState
+	// PollDone returns true if the async operation is successfully completed, e.g. not cancelled or panicked and result is available.
+	PollDone() bool
 
-	// Done returns true if the async operation is successfully completed, e.g. not cancelled or paniced and result is available.
-	Done() bool
+	// PollCancelled returns true if the async operation is cancelled.
+	PollCancelled() bool
 
-	// Cancelled returns true if the async operation is cancelled.
-	Cancelled() bool
+	// PollPanicked returns true if the async operation panicked.
+	PollPanicked() bool
 
-	// Paniced returns true if the async operation paniced.
-	Paniced() bool
-
-	// Pending returns true if the async operation is still in progress.
-	Pending() bool
+	// PollPending returns true if the async operation is still in progress.
+	PollPending() bool
 }
 
 type AsyncPollResult[T any] struct {
@@ -55,135 +52,159 @@ const (
 	Done
 	// Cancelled means the async operation is cancelled.
 	Cancelled
-	// Paniced means the async operation paniced.
-	Paniced
+	// Panicked means the async operation panicked.
+	Panicked
 )
 
 type async[T any] struct {
-	ctx                context.Context
-	state              atomic.Int32
-	result             atomic.Value
-	panic              atomic.Value
-	mu                 sync.RWMutex
-	waitResultChannels chan (chan T)
-	waitCancelChannels chan (chan struct{})
-	waitPanicChannels  chan (chan any)
-}
+	ctx    context.Context
+	state  int32
+	mu     sync.RWMutex
+	result atomic.Value
+	panic  atomic.Value
 
-type Result[T any] struct {
-	Value T
-	Error error
-}
+	waitingForResult     []chan T
+	waitingForResultChan chan chan T
 
-type Result2[T1 any, T2 any] struct {
-	Value1 T1
-	Value2 T2
-	Error  error
+	waitingForCancel     []chan struct{}
+	waitingForCancelChan chan chan struct{}
+
+	waitingForPanic     []chan any
+	waitingForPanicChan chan chan any
+
+	asyncCompleted chan struct{}
 }
 
 func NewAsync[T any](ctx context.Context, fn func(ctx context.Context) T) Async[T] {
-	waitResultChannels := make(chan (chan T), 8)
-	waitCancelChannels := make(chan (chan struct{}), 8)
-	waitPanicChannels := make(chan (chan any), 8)
-
 	a := &async[T]{
-		ctx:                ctx,
-		state:              atomic.Int32{},
-		result:             atomic.Value{},
-		panic:              atomic.Value{},
-		mu:                 sync.RWMutex{},
-		waitResultChannels: waitResultChannels,
-		waitCancelChannels: waitCancelChannels,
-		waitPanicChannels:  waitPanicChannels,
+		ctx:    ctx,
+		state:  int32(Pending),
+		mu:     sync.RWMutex{},
+		result: atomic.Value{},
+		panic:  atomic.Value{},
+
+		waitingForResultChan: make(chan chan T, 1),
+		waitingForResult:     make([]chan T, 0, 8),
+
+		waitingForCancelChan: make(chan chan struct{}, 1),
+		waitingForCancel:     make([]chan struct{}, 0, 8),
+
+		waitingForPanicChan: make(chan chan any, 1),
+		waitingForPanic:     make([]chan any, 0, 8),
+
+		asyncCompleted: make(chan struct{}, 1),
 	}
-	a.state.Store(int32(Pending))
+	atomic.StoreInt32(&a.state, int32(Pending))
 
-	go func(a *async[T]) {
-		resultChannel := make(chan T, 1)
-		panicChannel := make(chan any, 1)
-		go func(a *async[T], resultChannel chan T, panicChannel chan any) {
-			defer func() {
-				if r := recover(); r != nil {
-					panicChannel <- r
-				}
-			}()
-			result := fn(a.ctx)
-			resultChannel <- result
-		}(a, resultChannel, panicChannel)
+	go a.processWaitingRequests()
 
-		select {
-		case <-a.ctx.Done():
-			a.state.Store(int32(Cancelled))
-		case result := <-resultChannel:
-			a.result.Store(result)
-			a.state.Store(int32(Done))
-		case panic := <-panicChannel:
-			a.panic.Store(panic)
-			a.state.Store(int32(Paniced))
-		}
-
-		a.sendResultAndCloseChannels()
-	}(a)
+	go a.runAsync(fn)
 
 	return a
 }
 
-func (a *async[T]) sendResultAndCloseChannels() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	defer close(a.waitResultChannels)
-	defer close(a.waitCancelChannels)
-	defer close(a.waitPanicChannels)
+func (a *async[T]) runAsync(fn func(ctx context.Context) T) {
+	resultChannel := make(chan T, 1)
+	panicChannel := make(chan any, 1)
 
-	state := AsyncState(a.state.Load())
+	go func(a *async[T], resultChannel chan T, panicChannel chan any) {
+		defer func() {
+			if r := recover(); r != nil {
+				panicChannel <- r
+			}
+		}()
+		result := fn(a.ctx)
+		resultChannel <- result
+	}(a, resultChannel, panicChannel)
+
+	select {
+	case <-a.ctx.Done():
+		atomic.StoreInt32(&a.state, int32(Cancelled))
+	case result := <-resultChannel:
+		a.result.Store(result)
+		atomic.StoreInt32(&a.state, int32(Done))
+	case panic := <-panicChannel:
+		a.panic.Store(panic)
+		atomic.StoreInt32(&a.state, int32(Panicked))
+	}
+
+	a.asyncCompleted <- struct{}{}
+}
+
+func (a *async[T]) processWaitingRequests() {
+loop:
+	for {
+		select {
+		case ch, _ := <-a.waitingForResultChan:
+			a.waitingForResult = append(a.waitingForResult, ch)
+		case ch, _ := <-a.waitingForCancelChan:
+			a.waitingForCancel = append(a.waitingForCancel, ch)
+		case ch, _ := <-a.waitingForPanicChan:
+			a.waitingForPanic = append(a.waitingForPanic, ch)
+		case <-a.asyncCompleted:
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			for {
+				select {
+				case ch, _ := <-a.waitingForResultChan:
+					a.waitingForResult = append(a.waitingForResult, ch)
+				case ch, _ := <-a.waitingForCancelChan:
+					a.waitingForCancel = append(a.waitingForCancel, ch)
+				case ch, _ := <-a.waitingForPanicChan:
+					a.waitingForPanic = append(a.waitingForPanic, ch)
+				default:
+					break loop
+				}
+			}
+		}
+	}
+
+	a.sendResult()
+}
+
+func (a *async[T]) sendResult() {
+	state := AsyncState(atomic.LoadInt32(&a.state))
 	switch state {
 	case Done:
 		result := a.result.Load().(T)
-		for {
-			select {
-			case ch, ok := <-a.waitResultChannels:
-				if !ok {
-					panic("waitResultChannels unexpectedly closed")
-				}
-				ch <- result
-			default:
-				goto Done
-			}
+		for _, ch := range a.waitingForResult {
+			ch <- result
+		}
+		for _, ch := range a.waitingForCancel {
+			close(ch)
+		}
+		for _, ch := range a.waitingForPanic {
+			close(ch)
 		}
 	case Cancelled:
-		for {
-			select {
-			case ch, ok := <-a.waitCancelChannels:
-				if !ok {
-					panic("waitCancelChannels unexpectedly closed")
-				}
-				ch <- struct{}{}
-			default:
-				goto Done
-			}
+		for _, ch := range a.waitingForResult {
+			close(ch)
 		}
-	case Paniced:
+		for _, ch := range a.waitingForCancel {
+			ch <- struct{}{}
+		}
+		for _, ch := range a.waitingForPanic {
+			close(ch)
+		}
+	case Panicked:
 		panicValue := a.panic.Load()
-		for {
-			select {
-			case ch, ok := <-a.waitPanicChannels:
-				if !ok {
-					panic("waitPanicChannels unexpectedly closed")
-				}
-				ch <- panicValue
-			default:
-				goto Done
-			}
+		for _, ch := range a.waitingForResult {
+			close(ch)
+		}
+		for _, ch := range a.waitingForCancel {
+			close(ch)
+		}
+		for _, ch := range a.waitingForPanic {
+			ch <- panicValue
 		}
 	default:
 		panic(fmt.Sprintf("unexpected state %d", state))
 	}
-Done:
 }
 
 func (a *async[T]) Wait() <-chan T {
 	for {
-		state := AsyncState(a.state.Load())
+		state := AsyncState(atomic.LoadInt32(&a.state))
 		switch state {
 		case Pending:
 			locked := a.mu.TryRLock()
@@ -192,7 +213,7 @@ func (a *async[T]) Wait() <-chan T {
 			} else {
 				defer a.mu.RUnlock()
 				ch := make(chan T, 1)
-				a.waitResultChannels <- ch
+				a.waitingForResultChan <- ch
 				return ch
 			}
 		case Done:
@@ -209,7 +230,7 @@ func (a *async[T]) Wait() <-chan T {
 
 func (a *async[T]) WaitPanic() <-chan any {
 	for {
-		state := AsyncState(a.state.Load())
+		state := AsyncState(atomic.LoadInt32(&a.state))
 		switch state {
 		case Pending:
 			locked := a.mu.TryRLock()
@@ -218,10 +239,10 @@ func (a *async[T]) WaitPanic() <-chan any {
 			} else {
 				defer a.mu.RUnlock()
 				ch := make(chan any, 1)
-				a.waitPanicChannels <- ch
+				a.waitingForPanicChan <- ch
 				return ch
 			}
-		case Paniced:
+		case Panicked:
 			ch := make(chan any, 1)
 			ch <- a.panic.Load()
 			return ch
@@ -235,7 +256,7 @@ func (a *async[T]) WaitPanic() <-chan any {
 
 func (a *async[T]) WaitCancel() <-chan struct{} {
 	for {
-		state := AsyncState(a.state.Load())
+		state := AsyncState(atomic.LoadInt32(&a.state))
 		switch state {
 		case Pending:
 			locked := a.mu.TryRLock()
@@ -244,7 +265,7 @@ func (a *async[T]) WaitCancel() <-chan struct{} {
 			} else {
 				defer a.mu.RUnlock()
 				ch := make(chan struct{}, 1)
-				a.waitCancelChannels <- ch
+				a.waitingForCancelChan <- ch
 				return ch
 			}
 		case Cancelled:
@@ -260,7 +281,7 @@ func (a *async[T]) WaitCancel() <-chan struct{} {
 }
 
 func (a *async[T]) PollState() AsyncPollResult[T] {
-	state := AsyncState(a.state.Load())
+	state := AsyncState(atomic.LoadInt32(&a.state))
 	switch state {
 	case Pending:
 		return AsyncPollResult[T]{State: Pending}
@@ -268,15 +289,15 @@ func (a *async[T]) PollState() AsyncPollResult[T] {
 		return AsyncPollResult[T]{State: Done, Result: a.result.Load().(T)}
 	case Cancelled:
 		return AsyncPollResult[T]{State: Cancelled}
-	case Paniced:
-		return AsyncPollResult[T]{State: Paniced, Panic: a.panic.Load()}
+	case Panicked:
+		return AsyncPollResult[T]{State: Panicked, Panic: a.panic.Load()}
 	default:
 		panic(fmt.Sprintf("unexpected state %d", state))
 	}
 }
 
 func (a *async[T]) Poll() (T, bool) {
-	state := AsyncState(a.state.Load())
+	state := AsyncState(atomic.LoadInt32(&a.state))
 	if state == Done {
 		return a.result.Load().(T), true
 	}
@@ -284,22 +305,18 @@ func (a *async[T]) Poll() (T, bool) {
 	return zero, false
 }
 
-func (a *async[T]) State() AsyncState {
-	return AsyncState(a.state.Load())
+func (a *async[T]) PollDone() bool {
+	return atomic.LoadInt32(&a.state) == int32(Done)
 }
 
-func (a *async[T]) Done() bool {
-	return a.State() == Done
+func (a *async[T]) PollCancelled() bool {
+	return atomic.LoadInt32(&a.state) == int32(Cancelled)
 }
 
-func (a *async[T]) Cancelled() bool {
-	return a.State() == Cancelled
+func (a *async[T]) PollPanicked() bool {
+	return atomic.LoadInt32(&a.state) == int32(Panicked)
 }
 
-func (a *async[T]) Paniced() bool {
-	return a.State() == Paniced
-}
-
-func (a *async[T]) Pending() bool {
-	return a.State() == Pending
+func (a *async[T]) PollPending() bool {
+	return atomic.LoadInt32(&a.state) == int32(Pending)
 }
