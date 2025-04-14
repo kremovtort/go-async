@@ -57,7 +57,7 @@ func TestNewAsync_Panic(t *testing.T) {
 
 	select {
 	case panicVal := <-a.WaitPanic():
-		if panicVal != "test panic" {
+		if panicVal.Panic != "test panic" {
 			t.Errorf("expected 'test panic', got %v", panicVal)
 		}
 	case <-time.After(time.Second):
@@ -101,8 +101,8 @@ func TestNewAsync_PollState(t *testing.T) {
 
 	// Initially should be pending
 	state := a.PollState()
-	if state.State != Pending {
-		t.Errorf("expected Pending state, got %v", state.State)
+	if state.Status != Pending {
+		t.Errorf("expected Pending state, got %v", state.Status)
 	}
 
 	// Wait for completion
@@ -110,8 +110,8 @@ func TestNewAsync_PollState(t *testing.T) {
 
 	// After completion
 	state = a.PollState()
-	if state.State != Done {
-		t.Errorf("expected Done state, got %v", state.State)
+	if state.Status != Done {
+		t.Errorf("expected Done state, got %v", state.Status)
 	}
 	if state.Result != "test" {
 		t.Errorf("expected 'test', got %v", state.Result)
